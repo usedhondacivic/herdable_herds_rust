@@ -1,0 +1,5 @@
+# Herds!
+
+```
+cargo run
+```
