@@ -2,23 +2,22 @@ use std::f32::consts::PI;
 
 use macroquad::prelude as mq;
 use macroquad::prelude::glam;
-use rand::Rng;
 use rapier2d::prelude::*;
 
-const PIXELS_PER_METER: i32 = 10;
+const PIXELS_PER_METER: i32 = 4;
 const WINDOW_SIZE_PX: (i32, i32) = (750, 750);
 const WINDOW_SIZE_METERS: (i32, i32) = (
     WINDOW_SIZE_PX.0 / PIXELS_PER_METER,
     WINDOW_SIZE_PX.1 / PIXELS_PER_METER,
 );
 
-const AGENT_SIZE: i32 = 10;
+const AGENT_SIZE: f32 = 0.5;
 
 const SHEEP_PROTECTED_RADIUS: f32 = 5.;
-const SHEEP_VISUAL_RADIUS: f32 = 10.;
+const SHEEP_VISUAL_RADIUS: f32 = 25.;
 
-const LINEAR_DAMPING: f32 = 0.2;
-const ANGULAR_DAMPING: f32 = 0.5;
+const LINEAR_DAMPING: f32 = 2.0;
+const ANGULAR_DAMPING: f32 = 2.0;
 
 struct PhysicsState {
     pub islands: IslandManager,
@@ -41,12 +40,14 @@ struct World {
     physics_pipeline: PhysicsPipeline,
 
     sheep: Vec<Sheep>,
+    dynamic_obstacle: Vec<DynamicObstacle>,
 }
 
 impl World {
     fn new() -> Self {
         let mut new_world = World {
             sheep: Vec::new(),
+            dynamic_obstacle: Vec::new(),
             physics_state: PhysicsState {
                 islands: IslandManager::new(),
                 broad_phase: DefaultBroadPhase::new(),
@@ -69,22 +70,35 @@ impl World {
             protected_radius: SHEEP_PROTECTED_RADIUS,
             visual_radius: SHEEP_VISUAL_RADIUS,
             seperation_strength: 25.0,
-            cohesion_strength: 3.0,
-            alignment_strength: 1.0,
+            cohesion_strength: 4.0,
+            alignment_strength: 5.0,
         };
 
-        let mut rng = rand::thread_rng();
+        (1..10).for_each(|x| {
+            (1..50).for_each(|y| {
+                new_world.sheep.push(Sheep::new(
+                    &mut new_world.physics_state,
+                    vector![x as f32 * 2.0, y as f32 * 2.0],
+                    vector![0.0, 0.0],
+                    rules,
+                ))
+            });
+        });
 
-        (1..500).for_each(|_| {
-            new_world.sheep.push(Sheep::new(
-                &mut new_world.physics_state,
-                vector![
-                    rng.gen_range(0. ..WINDOW_SIZE_METERS.0 as f32),
-                    rng.gen_range(0. ..WINDOW_SIZE_METERS.1 as f32)
-                ],
-                vector![0.0, 0.0],
-                rules,
-            ))
+        // new_world.dynamic_obstacle.push(DynamicObstacle::new(
+        //     &mut new_world.physics_state,
+        //     vector![100.0, 100.0],
+        //     20.0,
+        // ));
+
+        (1..5).for_each(|x| {
+            (1..10).for_each(|y| {
+                new_world.dynamic_obstacle.push(DynamicObstacle::new(
+                    &mut new_world.physics_state,
+                    vector![100.0 + x as f32 * 15.0, y as f32 * 15.0],
+                    5.0,
+                ));
+            });
         });
 
         new_world
@@ -92,6 +106,9 @@ impl World {
 
     fn draw(&self) {
         self.sheep.iter().for_each(|s| s.draw(&self.physics_state));
+        self.dynamic_obstacle
+            .iter()
+            .for_each(|s| s.draw(&self.physics_state));
     }
 
     fn update(&mut self) {
@@ -146,7 +163,9 @@ impl Sheep {
             .linear_damping(LINEAR_DAMPING)
             .build();
 
-        let collider = ColliderBuilder::ball(0.5).restitution(0.7).build();
+        let collider = ColliderBuilder::ball(AGENT_SIZE as f32)
+            .restitution(0.7)
+            .build();
         let body_handle = state.bodies.insert(rigid_body);
         let collider_handle =
             state
@@ -179,44 +198,49 @@ impl Sheep {
                 return;
             }
 
-            // Seperation
             if let Some(other_body) = state.bodies.get(s.body) {
+                // Seperation
                 let diff = own_pos.translation.vector - other_body.position().translation.vector;
-                if diff.magnitude() < self.rules.protected_radius {
-                    force += diff.normalize() * (1.0 / diff.magnitude()) * self.rules.seperation_strength;
+                if diff.magnitude() != 0.0 && diff.magnitude() < self.rules.protected_radius {
+                    force += diff.normalize()
+                        * (1.0 / diff.magnitude())
+                        * self.rules.seperation_strength;
                 }
-            };
 
-            // Cohession
-            if let Some(other_body) = state.bodies.get(s.body) {
+                // Cohession
                 let diff = own_pos.translation.vector - other_body.position().translation.vector;
-                if diff.magnitude() < self.rules.visual_radius {
-                    force -= diff.normalize() * (1.0 / diff.magnitude()) * self.rules.cohesion_strength;
+                if diff.magnitude() != 0.0 && diff.magnitude() < self.rules.visual_radius {
+                    force -=
+                        diff.normalize() * (1.0 / diff.magnitude()) * self.rules.cohesion_strength;
                 }
-            };
 
-            // Allignment
-            if let Some(other_body) = state.bodies.get(s.body) {
+                // Allignment
                 let diff = own_pos.translation.vector - other_body.position().translation.vector;
-                if diff.magnitude() < self.rules.visual_radius {
+                if diff.magnitude() != 0.0 && diff.magnitude() < self.rules.visual_radius {
                     num_neighbors += 1;
                     neighbor_vel_sum +=
-                        other_body.linvel().component_div(&diff) * self.rules.alignment_strength;
+                        other_body.linvel() / diff.magnitude() * self.rules.alignment_strength;
                 }
             };
         });
 
-        if neighbor_vel_sum != vector![0.0, 0.0] {
+        if neighbor_vel_sum.magnitude() != 0.0 && num_neighbors != 0 {
             let neighbor_vel_avg = neighbor_vel_sum / (num_neighbors as f32);
             force += neighbor_vel_avg;
         }
 
-        force = force.cap_magnitude(5.0);
+        force = force.cap_magnitude(50.0);
 
         let (mouse_x, mouse_y) = mq::mouse_position();
-        let mouse_pos = vector![mouse_x / (PIXELS_PER_METER as f32), mouse_y / (PIXELS_PER_METER as f32)];
+        let mouse_pos = vector![
+            mouse_x / (PIXELS_PER_METER as f32),
+            mouse_y / (PIXELS_PER_METER as f32)
+        ];
+
         let diff = own_pos.translation.vector - mouse_pos;
-        force += diff.normalize() * (1.0 / diff.magnitude()) * 20.0;
+        if diff.magnitude() != 0.0 {
+            force += diff.normalize() * (1.0 / diff.magnitude()) * 500.0;
+        }
 
         if own_pos.translation.x > (WINDOW_SIZE_METERS.0 - 10) as f32 {
             force.x -= 6.0;
@@ -237,13 +261,55 @@ impl Sheep {
     }
 }
 
+struct DynamicObstacle {
+    body: RigidBodyHandle,
+    body_collider: ColliderHandle,
+    size: f32,
+}
+
+impl DynamicObstacle {
+    fn new(state: &mut PhysicsState, pos: nalgebra::Vector2<f32>, size: f32) -> Self {
+        let rigid_body = RigidBodyBuilder::dynamic()
+            .translation(pos)
+            .angular_damping(ANGULAR_DAMPING)
+            .linear_damping(LINEAR_DAMPING)
+            .build();
+
+        let collider = ColliderBuilder::cuboid(size, size).restitution(0.7).build();
+        let body_handle = state.bodies.insert(rigid_body);
+        let collider_handle =
+            state
+                .colliders
+                .insert_with_parent(collider, body_handle, &mut state.bodies);
+        DynamicObstacle {
+            body: body_handle,
+            body_collider: collider_handle,
+            size,
+        }
+    }
+    fn draw(&self, state: &PhysicsState) {
+        let pos = state.bodies[self.body].position().translation.vector * (PIXELS_PER_METER as f32);
+        let rot = state.bodies[self.body].rotation().angle();
+        mq::draw_poly_lines(
+            pos.x,
+            pos.y,
+            4,
+            f32::sqrt(2.0 * self.size.powf(2.0)) * (PIXELS_PER_METER as f32),
+            rot * (180. / PI) + 45.0,
+            2.0,
+            mq::WHITE,
+        );
+    }
+}
+
 fn draw_triangle(pos: nalgebra::Vector2<f32>, rot: f32, color: mq::Color) {
+    let agent_size_px = (AGENT_SIZE) * (PIXELS_PER_METER as f32);
     let p = glam::Vec2::new(pos.x, pos.y) * (PIXELS_PER_METER as f32);
-    mq::draw_circle(p.x, p.y, 5.0, mq::WHITE);
+    mq::draw_circle(p.x, p.y, agent_size_px, mq::WHITE);
     mq::draw_triangle(
         p,
-        p - glam::Vec2::from_angle(rot + (PI / 8.)) * (AGENT_SIZE as f32),
-        p - glam::Vec2::from_angle(rot - (PI / 8.)) * (AGENT_SIZE as f32),
+        p - glam::Vec2::from_angle(rot + (PI / 8.)) * agent_size_px,
+        p - glam::Vec2::from_angle(rot - (PI / 8.)) * agent_size_px,
         color,
     );
 }
