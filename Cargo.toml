@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 itertools = "0.13.0"
 macroquad = "0.4.13"
-nalgebra = { version = "*", features = ["convert-glam028"] }
+nalgebra = { version = "*", features = ["convert-glam027"] }
 rand = "0.8.5"
 rapier2d = {version = "0.22.0", features = ["simd-stable","parallel"]}
 
