@@ -5,9 +5,22 @@ use crate::world;
 
 use crate::agents::sheep::Sheep;
 
-enum ShepherdState {
+use std::cell::RefCell;
+
+#[derive(Default)]
+pub enum ShepherdMode {
+    COLLECT {
+        outlier_pos: Vector2<f32>,
+    },
+    #[default]
     DRIVE,
-    COLLECT,
+}
+
+#[derive(Default)]
+pub struct ShepherdState {
+    pub centroid: Vector2<f32>,
+    pub movement_target: Vector2<f32>,
+    pub mode: ShepherdMode,
 }
 
 #[derive(Clone, Copy)]
@@ -15,13 +28,15 @@ pub struct ShepherdRules {
     pub chasing_force: f32,
     pub local_force: f32,
     pub collect_radius: f32,
+    pub collect_lookahead: f32,
+    pub drive_lookahead: f32,
 }
 
 pub struct Shepherd {
     pub body: RigidBodyHandle,
     body_collider: ColliderHandle,
-    rules: ShepherdRules,
-    state: ShepherdState,
+    pub rules: ShepherdRules,
+    pub state: RefCell<ShepherdState>,
 }
 
 impl Shepherd {
@@ -46,55 +61,77 @@ impl Shepherd {
             state
                 .colliders
                 .insert_with_parent(collider, body_handle, &mut state.bodies);
+
         Shepherd {
             body: body_handle,
             body_collider: collider_handle,
             rules,
-            state: ShepherdState::DRIVE,
+            state: RefCell::new(ShepherdState::default()),
         }
     }
 
-    pub fn update(&self, state: &mut world::PhysicsState, sheep: &[Sheep], shepherds: &[Shepherd]) {
-        let mut sheep_centroid: Vector2<f32> = sheep
+    pub fn update(
+        &self,
+        goal: &Vector2<f32>,
+        phys_state: &mut world::PhysicsState,
+        sheep: &[Sheep],
+        _shepherds: &[Shepherd],
+    ) {
+        let mut state = self.state.borrow_mut();
+
+        state.centroid = sheep
             .iter()
             .map(|s| {
-                if let Some(sheep_body) = state.bodies.get(s.body) {
+                if let Some(sheep_body) = phys_state.bodies.get(s.body) {
                     return sheep_body.position().translation.vector;
                 }
                 Vector2::new(0.0, 0.0)
             })
             .sum();
-        sheep_centroid = sheep_centroid.scale(1.0 / sheep.len() as f32);
+        state.centroid = state.centroid.scale(1.0 / sheep.len() as f32);
 
-        let mut outlier: Option<Vector2<f32>> = None;
         let mut max_distance = 0.0;
         sheep.iter().for_each(|s| {
-            if let Some(sheep_body) = state.bodies.get(s.body) {
-                let dist = (sheep_body.position().translation.vector - sheep_centroid).magnitude();
+            if let Some(sheep_body) = phys_state.bodies.get(s.body) {
+                let dist = (sheep_body.position().translation.vector - state.centroid).magnitude();
                 if dist > max_distance {
-                    outlier = Some(sheep_body.position().translation.vector);
                     max_distance = dist;
+                    if dist > self.rules.collect_radius {
+                        state.mode = ShepherdMode::COLLECT {
+                            outlier_pos: sheep_body.position().translation.vector,
+                        }
+                    }
                 }
             }
         });
 
-        let own_body = state.bodies.get_mut(self.body).unwrap();
-        own_body.reset_forces(true);
-
-        if max_distance > self.rules.collect_radius {
-            own_body.add_force(
-                (outlier.unwrap() - own_body.position().translation.vector)
-                    .normalize()
-                    .scale(self.rules.local_force),
-                true,
-            );
-        } else {
-            own_body.add_force(
-                (sheep_centroid - own_body.position().translation.vector)
-                    .normalize()
-                    .scale(self.rules.local_force),
-                true,
-            );
+        if max_distance < self.rules.collect_radius {
+            state.mode = ShepherdMode::DRIVE;
         }
+
+        // Set target
+        let own_body = phys_state.bodies.get_mut(self.body).unwrap();
+
+        match state.mode {
+            ShepherdMode::COLLECT { outlier_pos } => {
+                let dir = outlier_pos - state.centroid;
+                state.movement_target =
+                    outlier_pos + dir.normalize() * self.rules.collect_lookahead;
+            }
+            ShepherdMode::DRIVE => {
+                let dir = state.centroid - goal;
+                state.movement_target =
+                    state.centroid + dir.normalize() * self.rules.drive_lookahead;
+            }
+        };
+
+        // Move towards target
+        own_body.reset_forces(true);
+        own_body.add_force(
+            (state.movement_target - own_body.position().translation.vector)
+                .normalize()
+                .scale(self.rules.local_force),
+            true,
+        );
     }
 }

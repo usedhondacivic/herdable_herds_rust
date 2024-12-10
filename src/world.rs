@@ -1,10 +1,11 @@
+use nalgebra::{wrap, Vector2};
 use rapier2d::prelude::*;
 
 use crate::agents::dynamic_obstacle::DynamicObstacle;
 use crate::agents::sheep::Sheep;
 use crate::agents::shepherd::Shepherd;
 
-pub const LINEAR_DAMPING: f32 = 2.0;
+pub const LINEAR_DAMPING: f32 = 4.0;
 pub const ANGULAR_DAMPING: f32 = 2.0;
 
 pub const AGENT_SIZE: f32 = 0.5;
@@ -32,10 +33,18 @@ pub struct World {
     pub sheep: Vec<Sheep>,
     pub shepherds: Vec<Shepherd>,
     pub dynamic_obstacles: Vec<DynamicObstacle>,
+
+    pub timestep: f32,
+    pub paused: bool,
 }
 
 impl World {
-    pub fn new() -> Self {
+    pub fn new(dt: f32) -> Self {
+        let params = {
+            let mut params = IntegrationParameters::default();
+            params.dt = dt;
+            params
+        };
         World {
             sheep: Vec::new(),
             shepherds: Vec::new(),
@@ -50,31 +59,37 @@ impl World {
                 multibody_joints: MultibodyJointSet::new(),
                 ccd_solver: CCDSolver::new(),
                 query_pipeline: QueryPipeline::new(),
-                integration_parameters: IntegrationParameters::default(),
+                integration_parameters: params,
                 gravity: vector![0.0, 0.0],
                 physics_hooks: (),
                 event_handler: (),
             },
             physics_pipeline: PhysicsPipeline::new(),
+            timestep: 1.0 / 60.0,
+            paused: false,
         }
     }
 
-    pub fn update(&mut self) {
-        self.physics_pipeline.step(
-            &self.physics_state.gravity,
-            &self.physics_state.integration_parameters,
-            &mut self.physics_state.islands,
-            &mut self.physics_state.broad_phase,
-            &mut self.physics_state.narrow_phase,
-            &mut self.physics_state.bodies,
-            &mut self.physics_state.colliders,
-            &mut self.physics_state.impulse_joints,
-            &mut self.physics_state.multibody_joints,
-            &mut self.physics_state.ccd_solver,
-            Some(&mut self.physics_state.query_pipeline),
-            &self.physics_state.physics_hooks,
-            &self.physics_state.event_handler,
-        );
+    pub fn update(&mut self, goal: &Vector2<f32>) {
+        self.physics_state.integration_parameters.dt = self.timestep;
+
+        if !self.paused {
+            self.physics_pipeline.step(
+                &self.physics_state.gravity,
+                &self.physics_state.integration_parameters,
+                &mut self.physics_state.islands,
+                &mut self.physics_state.broad_phase,
+                &mut self.physics_state.narrow_phase,
+                &mut self.physics_state.bodies,
+                &mut self.physics_state.colliders,
+                &mut self.physics_state.impulse_joints,
+                &mut self.physics_state.multibody_joints,
+                &mut self.physics_state.ccd_solver,
+                Some(&mut self.physics_state.query_pipeline),
+                &self.physics_state.physics_hooks,
+                &self.physics_state.event_handler,
+            );
+        }
 
         self.sheep
             .iter()
@@ -82,6 +97,6 @@ impl World {
 
         self.shepherds
             .iter()
-            .for_each(|s| s.update(&mut self.physics_state, &self.sheep, &self.shepherds));
+            .for_each(|s| s.update(goal, &mut self.physics_state, &self.sheep, &self.shepherds));
     }
 }
